@@ -1,0 +1,80 @@
+menu "HID Forwarder Options"
+
+config APP_ENABLE_USB_AUDIO
+    bool "Enable USB HS microphone"
+    default n
+    help
+        Enable the TinyUSB audio class device on the high-speed port to present a USB microphone stream.
+        Disable to remove the UAC component from the build while debugging HID behaviour only.
+
+config APP_ENABLE_USB_HID
+    bool "Enable USB HS keyboard/mouse"
+    default y
+    help
+        Enables the TinyUSB HID composite interfaces (keyboard and mouse) on the high-speed USB port.
+        Disable to test the audio (UAC) path in isolation when investigating enumeration issues.
+
+config APP_ABS_MOUSE_MAX_X
+    int "Absolute mouse max X coordinate"
+    range 2 65536
+    default 32768
+    help
+        Maximum X coordinate value expected from the absolute mouse TLV stream. The firmware maps
+        incoming coordinates in the range [0, max) to the HID 16-bit range [0, 65535]. Set this to the
+        remote desktop width when using absolute mode.
+
+config APP_ABS_MOUSE_MAX_Y
+    int "Absolute mouse max Y coordinate"
+    range 2 65536
+    default 32768
+    help
+        Maximum Y coordinate value expected from the absolute mouse TLV stream. The firmware maps
+        incoming coordinates in the range [0, max) to the HID 16-bit range [0, 65535]. Set this to the
+        remote desktop height when using absolute mode.
+
+config APP_TLV_MAX_PAYLOAD
+    int "Maximum TLV payload size"
+    range 64 65535
+    default 1024
+    help
+        Maximum payload size (bytes) accepted from TLV transports. Incoming packets above this limit are dropped.
+
+config APP_TLV_UDP_PORT
+    int "TLV UDP port"
+    range 1024 65535
+    default 47017
+    help
+        UDP port where the board listens for TLV packets.
+
+config APP_WIFI_ENABLE
+    bool "Enable Wi-Fi TLV listener"
+    default y
+    help
+        Enable a simple Wi-Fi SoftAP and UDP listener for TLV packets.
+
+config APP_WIFI_AP_SSID
+    string "Wi-Fi SoftAP SSID"
+    default "HIDForwarder"
+    depends on APP_WIFI_ENABLE
+
+config APP_WIFI_AP_PASSWORD
+    string "Wi-Fi SoftAP password"
+    default ""
+    depends on APP_WIFI_ENABLE
+    help
+        Leave empty to create an open network. Password must be at least 8 characters when set.
+
+config APP_WIFI_AP_CHANNEL
+    int "Wi-Fi SoftAP channel"
+    range 1 13
+    default 6
+    depends on APP_WIFI_ENABLE
+
+config APP_UART_BAUDRATE
+    int "UART TLV baud rate"
+    range 9600 921600
+    default 921600
+    help
+        Baud rate used on the UART bridge connected to the on-board USB-to-UART converter.
+
+endmenu

@@ -1,0 +1,8 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf: ^5.5
+  espressif/usb_device_uac: ^1.2.2
+  espressif/esp_tinyusb: ^2.0.0
+  waveshare/esp32_p4_wifi6_touch_lcd_4b: ^1.0.1
+  espressif/esp_lvgl_port: ^2.6.2
+  lvgl/lvgl: ^8.4
