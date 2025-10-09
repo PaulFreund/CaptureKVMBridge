@@ -3,12 +3,18 @@
 #include "esp_check.h"
 #include "esp_lvgl_port.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
+#include "esp_lcd_touch.h"
+#include "esp_lvgl_port_touch.h"
+#include "bsp/touch.h"
 #include "esp_lcd_panel_ops.h"
 #include <stdio.h>
 
 static const char *TAG = "display";
+
+#define DISPLAY_SLEEP_TIMEOUT_US   (30LL * 1000000LL)
 
 static lv_display_t *s_display = NULL;
 static lv_obj_t *s_state_label = NULL;
@@ -20,6 +26,13 @@ static lv_obj_t *s_mic_label = NULL;
 static lv_style_t s_header_style;
 static lv_style_t s_body_style;
 static bool s_styles_ready = false;
+
+static bsp_lcd_handles_t s_lcd_handles;
+static bool s_lcd_ready = false;
+static esp_lcd_panel_handle_t s_panel_handle = NULL;
+static esp_lcd_touch_handle_t s_touch_handle = NULL;
+static bool s_display_awake = false;
+static int64_t s_last_touch_timestamp_us = 0;
 
 static void init_label_styles(lv_obj_t *reference_obj)
 {
@@ -91,6 +104,79 @@ static void set_feature_style(lv_obj_t *label, bool active)
     lv_obj_set_style_text_color(label, color, LV_PART_MAIN | LV_STATE_DEFAULT);
 }
 
+static void display_wake(void)
+{
+    if (s_display_awake) {
+        return;
+    }
+
+    esp_err_t backlight_err = bsp_display_backlight_on();
+    if (backlight_err != ESP_OK) {
+        ESP_LOGW(TAG, "backlight enable failed: 0x%x", (int)backlight_err);
+    }
+
+    s_display_awake = true;
+    ESP_LOGI(TAG, "display awake");
+}
+
+static void display_sleep(void)
+{
+    if (!s_display_awake) {
+        return;
+    }
+
+    esp_err_t backlight_err = bsp_display_backlight_off();
+    if (backlight_err != ESP_OK) {
+        ESP_LOGW(TAG, "backlight disable failed: 0x%x", (int)backlight_err);
+    }
+
+    s_display_awake = false;
+    ESP_LOGI(TAG, "display sleeping");
+}
+
+static void poll_touch_activity(int64_t now_us)
+{
+    if (!s_touch_handle) {
+        return;
+    }
+
+    if (esp_lcd_touch_read_data(s_touch_handle) != ESP_OK) {
+        return;
+    }
+
+    uint16_t touch_x[1];
+    uint16_t touch_y[1];
+    uint16_t touch_strength[1];
+    uint8_t touch_points = 0;
+
+    bool touched = esp_lcd_touch_get_coordinates(s_touch_handle, touch_x, touch_y, touch_strength, &touch_points, 1);
+    if (touched && touch_points > 0) {
+        s_last_touch_timestamp_us = now_us;
+        if (!s_display_awake) {
+            display_wake();
+        }
+    }
+}
+
+static void update_display_power_state(int64_t now_us, int64_t latest_activity_us)
+{
+    if (latest_activity_us <= 0) {
+        display_wake();
+        return;
+    }
+
+    int64_t inactive_us = now_us - latest_activity_us;
+    if (inactive_us < 0) {
+        inactive_us = 0;
+    }
+
+    if (inactive_us >= DISPLAY_SLEEP_TIMEOUT_US) {
+        display_sleep();
+    } else {
+        display_wake();
+    }
+}
+
 esp_err_t display_ui_init(void)
 {
     if (s_display) {
@@ -105,10 +191,9 @@ esp_err_t display_ui_init(void)
         s_lvgl_initialized = true;
     }
 
-    static bsp_lcd_handles_t s_lcd_handles;
-    static bool s_lcd_ready = false;
     if (!s_lcd_ready) {
         ESP_RETURN_ON_ERROR(bsp_display_new_with_handles(NULL, &s_lcd_handles), TAG, "display new failed");
+        s_panel_handle = s_lcd_handles.panel;
         s_lcd_ready = true;
     }
 
@@ -165,11 +250,32 @@ esp_err_t display_ui_init(void)
     s_display = lvgl_port_add_disp_dsi(&disp_cfg, &dsi_cfg);
     ESP_RETURN_ON_FALSE(s_display != NULL, ESP_FAIL, TAG, "lvgl disp add failed");
 
-    // Ensure the panel is powered on and set as default display
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_lcd_handles.panel, true));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel_handle, true));
     lv_disp_set_default(s_display);
 
+    if (!s_touch_handle) {
+        esp_err_t touch_err = bsp_touch_new(NULL, &s_touch_handle);
+        if (touch_err != ESP_OK) {
+            ESP_LOGW(TAG, "touch init failed: 0x%x", (int)touch_err);
+        } else {
+            const lvgl_port_touch_cfg_t touch_cfg = {
+                .disp = s_display,
+                .handle = s_touch_handle,
+                .scale = {
+                    .x = 1.0f,
+                    .y = 1.0f,
+                },
+            };
+            lv_indev_t *touch_indev = lvgl_port_add_touch(&touch_cfg);
+            if (!touch_indev) {
+                ESP_LOGW(TAG, "lvgl touch registration failed");
+            }
+        }
+    }
+
     bsp_display_backlight_on();
+    s_display_awake = true;
+    s_last_touch_timestamp_us = esp_timer_get_time();
 
     ESP_RETURN_ON_FALSE(bsp_display_lock(portMAX_DELAY), ESP_ERR_TIMEOUT, TAG, "lvgl lock");
 
@@ -219,6 +325,16 @@ void display_ui_update(const app_status_snapshot_t *snapshot)
     if (!snapshot || !s_display) {
         return;
     }
+
+    int64_t now_us = esp_timer_get_time();
+    poll_touch_activity(now_us);
+
+    int64_t latest_activity_us = snapshot->last_event_timestamp_us;
+    if (latest_activity_us <= 0 || s_last_touch_timestamp_us > latest_activity_us) {
+        latest_activity_us = s_last_touch_timestamp_us;
+    }
+
+    update_display_power_state(now_us, latest_activity_us);
 
     char buffer[64];
 

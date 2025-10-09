@@ -1,5 +1,7 @@
 set(app_priv_requires
     esp_driver_gpio
+    esp_lcd_touch
+    esp_lcd_touch_gt911
     esp_lvgl_port
     esp32_p4_wifi6_touch_lcd_4b
     esp_tinyusb

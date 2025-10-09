@@ -16,6 +16,18 @@
 #include "tusb_uac/uac_descriptors.h"
 #include "class/audio/audio_device.h"
 #endif
+
+#if CFG_TUD_HID
+void tud_suspend_cb(bool remote_wakeup_en)
+{
+    usb_hs_on_suspend(remote_wakeup_en);
+}
+
+void tud_resume_cb(void)
+{
+    usb_hs_on_resume();
+}
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -259,6 +271,17 @@ static const char *string_desc_table[STRID_COUNT] = {
 // -----------------------------------------------------------------------------
 
 static bool s_usb_ready = false;
+#if CFG_TUD_HID
+static bool s_usb_suspended = false;
+static bool s_remote_wakeup_enabled = false;
+static int64_t s_last_remote_wakeup_us = 0;
+static bool s_pending_keyboard_report = false;
+static usb_keyboard_report_t s_pending_keyboard;
+static bool s_pending_mouse_report = false;
+static usb_mouse_report_t s_pending_mouse;
+static bool s_pending_mouse_abs_report = false;
+static usb_mouse_absolute_report_t s_pending_mouse_abs;
+#endif
 #if CFG_TUD_AUDIO
 static RingbufHandle_t s_mic_ring = NULL;
 static int64_t s_last_mic_drop_log_us = 0;
@@ -342,6 +365,84 @@ static void update_hid_activity(bool keyboard, bool mouse)
 {
     app_state_mark_feature_usage(keyboard, mouse, false);
 }
+
+static void request_remote_wakeup_if_needed(void)
+{
+    if (!s_usb_suspended || !s_remote_wakeup_enabled) {
+        return;
+    }
+
+    int64_t now = esp_timer_get_time();
+    if ((now - s_last_remote_wakeup_us) < 20000) {
+        return;
+    }
+
+    if (tud_remote_wakeup()) {
+        s_last_remote_wakeup_us = now;
+        s_remote_wakeup_enabled = false;
+        ESP_LOGI(TAG, "Remote wakeup signalled");
+    } else {
+        ESP_LOGW(TAG, "Remote wakeup request failed");
+    }
+}
+
+static bool send_keyboard_report_now(const usb_keyboard_report_t *report)
+{
+    if (!tud_hid_ready()) {
+        return false;
+    }
+
+    bool ok = tud_hid_report(HID_REPORT_ID_KEYBOARD, report, sizeof(*report));
+    if (ok) {
+        update_hid_activity(true, false);
+    }
+    return ok;
+}
+
+static bool send_mouse_report_now(const usb_mouse_report_t *report)
+{
+    if (!tud_hid_ready()) {
+        return false;
+    }
+
+    hid_mouse_report_t hid_report = {
+        .buttons = report->buttons & 0x1F,
+        .x = report->x,
+        .y = report->y,
+        .wheel = report->wheel,
+        .pan = report->pan,
+    };
+
+    bool ok = tud_hid_report(HID_REPORT_ID_MOUSE_REL, &hid_report, sizeof(hid_report));
+    if (ok) {
+        update_hid_activity(false, true);
+    }
+    return ok;
+}
+
+static bool send_mouse_abs_report_now(const usb_mouse_absolute_report_t *report)
+{
+    if (!tud_hid_ready()) {
+        return false;
+    }
+
+    int16_t scaled_x = scale_abs_axis(report->x, (uint32_t)CONFIG_APP_ABS_MOUSE_MAX_X);
+    int16_t scaled_y = scale_abs_axis(report->y, (uint32_t)CONFIG_APP_ABS_MOUSE_MAX_Y);
+
+    hid_abs_mouse_report_t hid_report = {
+        .buttons = report->buttons & 0x1F,
+        .x = scaled_x,
+        .y = scaled_y,
+        .wheel = report->wheel,
+        .pan = report->pan,
+    };
+
+    bool ok = tud_hid_report(HID_REPORT_ID_MOUSE_ABS, &hid_report, sizeof(hid_report));
+    if (ok) {
+        update_hid_activity(false, true);
+    }
+    return ok;
+}
 #else
 static inline void update_hid_activity(bool keyboard, bool mouse)
 {
@@ -420,12 +521,13 @@ void usb_hs_handle_keyboard(const usb_keyboard_report_t *report)
     if (!s_usb_ready || !report) {
         return;
     }
-    if (!tud_hid_ready()) {
-        return;
-    }
 
-    tud_hid_report(HID_REPORT_ID_KEYBOARD, report, sizeof(usb_keyboard_report_t));
-    update_hid_activity(true, false);
+    request_remote_wakeup_if_needed();
+
+    if (!send_keyboard_report_now(report)) {
+        s_pending_keyboard = *report;
+        s_pending_keyboard_report = true;
+    }
 }
 
 void usb_hs_handle_mouse(const usb_mouse_report_t *report)
@@ -433,21 +535,13 @@ void usb_hs_handle_mouse(const usb_mouse_report_t *report)
     if (!s_usb_ready || !report) {
         return;
     }
-    if (!tud_hid_ready()) {
-        return;
+
+    request_remote_wakeup_if_needed();
+
+    if (!send_mouse_report_now(report)) {
+        s_pending_mouse = *report;
+        s_pending_mouse_report = true;
     }
-
-    hid_mouse_report_t hid_report = {
-        .buttons = report->buttons & 0x1F,
-        .x = report->x,
-        .y = report->y,
-        .wheel = report->wheel,
-        .pan = report->pan,
-    };
-
-    tud_hid_report(HID_REPORT_ID_MOUSE_REL, &hid_report, sizeof(hid_report));
-
-    update_hid_activity(false, true);
 }
 
 void usb_hs_handle_mouse_absolute(const usb_mouse_absolute_report_t *report)
@@ -455,23 +549,13 @@ void usb_hs_handle_mouse_absolute(const usb_mouse_absolute_report_t *report)
     if (!s_usb_ready || !report) {
         return;
     }
-    if (!tud_hid_ready()) {
-        return;
+
+    request_remote_wakeup_if_needed();
+
+    if (!send_mouse_abs_report_now(report)) {
+        s_pending_mouse_abs = *report;
+        s_pending_mouse_abs_report = true;
     }
-
-    int16_t scaled_x = scale_abs_axis(report->x, (uint32_t)CONFIG_APP_ABS_MOUSE_MAX_X);
-    int16_t scaled_y = scale_abs_axis(report->y, (uint32_t)CONFIG_APP_ABS_MOUSE_MAX_Y);
-
-    hid_abs_mouse_report_t hid_report = {
-        .buttons = report->buttons & 0x1F,
-        .x = scaled_x,
-        .y = scaled_y,
-        .wheel = report->wheel,
-        .pan = report->pan,
-    };
-
-    tud_hid_report(HID_REPORT_ID_MOUSE_ABS, &hid_report, sizeof(hid_report));
-    update_hid_activity(false, true);
 }
 #else
 void usb_hs_handle_keyboard(const usb_keyboard_report_t *report)
@@ -530,8 +614,58 @@ void usb_hs_handle_microphone_frame(const usb_microphone_frame_t *frame)
 
 void usb_hs_poll(void)
 {
+#if CFG_TUD_HID
+    if (!s_usb_ready) {
+        return;
+    }
+
+    bool progress = true;
+    while (progress && tud_hid_ready()) {
+        progress = false;
+
+        if (s_pending_keyboard_report && send_keyboard_report_now(&s_pending_keyboard)) {
+            s_pending_keyboard_report = false;
+            progress = true;
+            continue;
+        }
+
+        if (s_pending_mouse_report && send_mouse_report_now(&s_pending_mouse)) {
+            s_pending_mouse_report = false;
+            progress = true;
+            continue;
+        }
+
+        if (s_pending_mouse_abs_report && send_mouse_abs_report_now(&s_pending_mouse_abs)) {
+            s_pending_mouse_abs_report = false;
+            progress = true;
+            continue;
+        }
+    }
+#else
     (void)s_usb_ready;
-    // All processing handled by TinyUSB tasks and callbacks.
+#endif
+}
+
+void usb_hs_on_suspend(bool remote_wakeup_enabled)
+{
+#if CFG_TUD_HID
+    s_usb_suspended = true;
+    s_remote_wakeup_enabled = remote_wakeup_enabled;
+    s_last_remote_wakeup_us = 0;
+    ESP_LOGI(TAG, "USB suspended (remote wake %s)", remote_wakeup_enabled ? "enabled" : "disabled");
+#else
+    (void)remote_wakeup_enabled;
+#endif
+}
+
+void usb_hs_on_resume(void)
+{
+#if CFG_TUD_HID
+    s_usb_suspended = false;
+    s_remote_wakeup_enabled = false;
+    s_last_remote_wakeup_us = 0;
+    ESP_LOGI(TAG, "USB resumed");
+#endif
 }
 
 // -----------------------------------------------------------------------------

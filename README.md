@@ -15,6 +15,8 @@ the PC side without requiring any custom drivers on Windows.
   microphone so the target PC sees standard input peripherals.
 - Full-speed USB: presents a CDC ACM channel that receives TLV command frames from CaptureKVM;
   keyboard, mouse, and microphone data are forwarded with a latency-optimised scheduling pipeline.
+- Remote wake support: when the host PC suspends with wake enabled, incoming keyboard or mouse
+  activity triggers a USB remote wakeup so the target machine powers back on seamlessly.
 - Touch display UI: LVGL dashboard with a dark theme that shows USB state and per-feature activity
   indicators at a glance.
 - Configurable USB descriptors, microphone buffering, and TLV payload limits via Kconfig options.

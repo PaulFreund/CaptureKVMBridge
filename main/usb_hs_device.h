@@ -42,6 +42,8 @@ void usb_hs_handle_mouse(const usb_mouse_report_t *report);
 void usb_hs_handle_mouse_absolute(const usb_mouse_absolute_report_t *report);
 void usb_hs_handle_microphone_frame(const usb_microphone_frame_t *frame);
 void usb_hs_poll(void);
+void usb_hs_on_suspend(bool remote_wakeup_enabled);
+void usb_hs_on_resume(void);
 
 #ifdef __cplusplus
 }
