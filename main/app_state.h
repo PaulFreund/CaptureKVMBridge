@@ -17,6 +17,7 @@ typedef enum {
 typedef enum {
     APP_INPUT_SOURCE_NONE = 0,
     APP_INPUT_SOURCE_NETWORK,
+    APP_INPUT_SOURCE_USB_JTAG,
     APP_INPUT_SOURCE_UART,
 } app_input_source_t;
 

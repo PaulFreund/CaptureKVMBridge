@@ -88,6 +88,8 @@ static const char *source_to_string(app_input_source_t source)
         return "None";
     case APP_INPUT_SOURCE_NETWORK:
         return "Network";
+    case APP_INPUT_SOURCE_USB_JTAG:
+        return "USB-JTAG";
     case APP_INPUT_SOURCE_UART:
         return "UART";
     default:

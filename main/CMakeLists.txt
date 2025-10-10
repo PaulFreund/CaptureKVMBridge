@@ -28,6 +28,8 @@ idf_component_register(
         "display_ui.c"
         "network_transport.c"
         "serial_transport.c"
+        "uart_transport.c"
+        "tlv_stream.c"
     INCLUDE_DIRS
         "."
     PRIV_INCLUDE_DIRS

@@ -4,10 +4,10 @@
 # CaptureKVMBridge [![Implemented with Codex](https://img.shields.io/badge/Implemented%20with-Codex-6A5ACD?logo=openai&logoColor=white)](https://github.com/openai/codex)
 
 CaptureKVMBridge turns the ESP32-P4-WIFI6-Touch-LCD-4B panel into a USB bridge for the
-[CaptureKVM](https://github.com/PaulFreund/CaptureKVM) desktop application. Any other ESP32-P4 board should work as well. Please be aware that I needed to solder two 0Ohm resistors to the board and create a custom cable, so keep that in mind when choosing a board. The firmware exposes the
+[CaptureKVM](https://github.com/PaulFreund/CaptureKVM) desktop application. The firmware exposes the
 board's high-speed USB OTG port as a composite device (keyboard, mouse, and 48 kHz mono microphone)
-so you can interact with a remote machine, while the full-speed USB port accepts command frames from
-the PC side without requiring any custom drivers on Windows.
+so you can interact with a remote machine, while either the full-speed USB port or the UART/USB bridge
+accepts command frames from the PC side without requiring any custom drivers on Windows.
 
 ## Firmware Highlights
 
@@ -15,6 +15,8 @@ the PC side without requiring any custom drivers on Windows.
   microphone so the target PC sees standard input peripherals.
 - Full-speed USB: presents a CDC ACM channel that receives TLV command frames from CaptureKVM;
   keyboard, mouse, and microphone data are forwarded with a latency-optimised scheduling pipeline.
+- On-board FTDI bridge: optional TLV ingress over the board's USB/UART converter, clocked at
+  6 Mbps by default for low latency while keeping log output on the USB Serial/JTAG console.
 - Remote wake support: when the host PC suspends with wake enabled, incoming keyboard or mouse
   activity triggers a USB remote wakeup so the target machine powers back on seamlessly.
 - Touch display UI: LVGL dashboard with a dark theme that shows USB state and per-feature activity
@@ -37,7 +39,9 @@ idf.py build flash monitor
 ```
 
 Make sure both USB ports are connected: full-speed to the controlling computer running CaptureKVM and
-high-speed to the destination system that should receive the emulated peripherals.
+high-speed to the destination system that should receive the emulated peripherals. Console logs stream
+over the USB Serial/JTAG interface; when exercising the FTDI bridge, point the CaptureKVM desktop app
+at the additional COM port, configured for 6,000,000 baud.
 
 ## License
 

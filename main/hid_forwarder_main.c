@@ -4,6 +4,7 @@
 #include "usb_hs_device.h"
 #include "network_transport.h"
 #include "serial_transport.h"
+#include "uart_transport.h"
 
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
@@ -63,6 +64,8 @@ static void display_task(void *arg)
 void app_main(void)
 {
     ESP_LOGI(TAG, "starting forwarder");
+    esp_log_level_set("uart_tlv", ESP_LOG_DEBUG);
+    esp_log_level_set("tlv_stream", ESP_LOG_DEBUG);
     esp_err_t nvs_ret = nvs_flash_init();
     if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -82,6 +85,7 @@ void app_main(void)
     ESP_ERROR_CHECK(protocol_tlv_init(handle_protocol_event));
     ESP_ERROR_CHECK(network_transport_start(protocol_tlv_receive_frame));
     ESP_ERROR_CHECK(serial_transport_start(protocol_tlv_receive_frame));
+    ESP_ERROR_CHECK(uart_transport_start(protocol_tlv_receive_frame));
 
     xTaskCreatePinnedToCore(core_service_task, "core_service", 4096, NULL, 5, NULL, 1);
     if (display_enabled) {

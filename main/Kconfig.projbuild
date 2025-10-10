@@ -72,9 +72,30 @@ config APP_WIFI_AP_CHANNEL
 
 config APP_UART_BAUDRATE
     int "UART TLV baud rate"
-    range 9600 921600
-    default 921600
+    range 9600 6000000
+    default 6000000
     help
         Baud rate used on the UART bridge connected to the on-board USB-to-UART converter.
+
+config APP_UART_PORT_NUM
+    int "UART TLV UART port number"
+    range 0 2
+    default 0
+    help
+        UART controller used for the FTDI bridge (0=UART0, 1=UART1, ...).
+
+config APP_UART_RX_GPIO
+    int "UART TLV RX GPIO"
+    range 0 48
+    default 44
+    help
+        GPIO connected to the FTDI TX pin (default GPIO44 on ESP32-P4-WIFI6-Touch-LCD-4B).
+
+config APP_UART_TX_GPIO
+    int "UART TLV TX GPIO (-1 to disable)"
+    range -1 48
+    default -1
+    help
+        GPIO connected to the FTDI RX pin if transmit is required. Leave at -1 to keep TX disabled.
 
 endmenu
