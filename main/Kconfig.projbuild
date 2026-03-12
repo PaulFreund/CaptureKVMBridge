@@ -1,18 +1,27 @@
 menu "HID Forwarder Options"
 
 config APP_ENABLE_USB_AUDIO
-    bool "Enable USB HS microphone"
+    bool "Enable USB OTG microphone"
     default n
     help
-        Enable the TinyUSB audio class device on the high-speed port to present a USB microphone stream.
-        Disable to remove the UAC component from the build while debugging HID behaviour only.
+        Enable the TinyUSB audio class device on the USB OTG port to present a USB microphone stream.
+        ESP32-P4 uses high-speed USB, while ESP32-S3 uses full-speed USB.
 
 config APP_ENABLE_USB_HID
-    bool "Enable USB HS keyboard/mouse"
+    bool "Enable USB OTG keyboard/mouse"
     default y
     help
-        Enables the TinyUSB HID composite interfaces (keyboard and mouse) on the high-speed USB port.
-        Disable to test the audio (UAC) path in isolation when investigating enumeration issues.
+        Enables the TinyUSB HID composite interfaces (keyboard and mouse) on the USB OTG port.
+        ESP32-P4 uses high-speed USB, while ESP32-S3 uses full-speed USB.
+
+config APP_ENABLE_USB_SERIAL_JTAG_TLV
+    bool "Enable USB Serial/JTAG TLV ingress"
+    default y if IDF_TARGET_ESP32P4
+    default n
+    help
+        Enable TLV ingress over the fixed-function USB Serial/JTAG peripheral.
+        Leave this disabled on ESP32-S3 when the native USB OTG port is used for HID/audio,
+        because both functions share GPIO19/GPIO20.
 
 config APP_ABS_MOUSE_MAX_X
     int "Absolute mouse max X coordinate"
@@ -70,32 +79,60 @@ config APP_WIFI_AP_CHANNEL
     default 6
     depends on APP_WIFI_ENABLE
 
+config APP_TLV_ACTIVITY_LED_GPIO
+    int "TLV activity LED GPIO (-1 to disable)"
+    range -1 48
+    default -1
+    help
+        GPIO used for an LED pulse whenever a valid TLV frame is received from CaptureKVM.
+        Set to -1 to disable the indicator.
+
+config APP_TLV_ACTIVITY_LED_ACTIVE_LOW
+    bool "TLV activity LED is active low"
+    default n
+    depends on APP_TLV_ACTIVITY_LED_GPIO >= 0
+    help
+        Enable this when the board LED turns on when the GPIO is driven low.
+
+config APP_TLV_ACTIVITY_LED_PULSE_MS
+    int "TLV activity LED pulse time (ms)"
+    range 10 5000
+    default 120
+    depends on APP_TLV_ACTIVITY_LED_GPIO >= 0
+    help
+        Duration of the LED pulse after each valid TLV frame.
+
 config APP_UART_BAUDRATE
     int "UART TLV baud rate"
     range 9600 6000000
-    default 6000000
+    default 3000000
     help
-        Baud rate used on the UART bridge connected to the on-board USB-to-UART converter.
+        Baud rate used on the external UART bridge that carries TLV frames.
 
 config APP_UART_PORT_NUM
     int "UART TLV UART port number"
     range 0 2
+    default 0 if IDF_TARGET_ESP32S3
     default 0
     help
-        UART controller used for the FTDI bridge (0=UART0, 1=UART1, ...).
+        UART controller used for the TLV bridge (0=UART0, 1=UART1, ...).
 
 config APP_UART_RX_GPIO
     int "UART TLV RX GPIO"
-    range 0 48
-    default 44
+    range -1 48
+    default 44 if IDF_TARGET_ESP32S3
+    default 44 if IDF_TARGET_ESP32P4
+    default -1
     help
-        GPIO connected to the FTDI TX pin (default GPIO44 on ESP32-P4-WIFI6-Touch-LCD-4B).
+        GPIO connected to the bridge TX pin. Set to -1 to disable the UART TLV transport.
+        The default is GPIO44 on common ESP32-S3 boards with a USB-UART bridge and on the ESP32-P4 board.
 
 config APP_UART_TX_GPIO
     int "UART TLV TX GPIO (-1 to disable)"
     range -1 48
+    default -1 if IDF_TARGET_ESP32S3
     default -1
     help
-        GPIO connected to the FTDI RX pin if transmit is required. Leave at -1 to keep TX disabled.
+        GPIO connected to the bridge RX pin if transmit is required. Leave at -1 to keep TX disabled.
 
 endmenu

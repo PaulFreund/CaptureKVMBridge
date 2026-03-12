@@ -1,5 +1,7 @@
 #include "app_state.h"
+#include "input_activity_led.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "app_state";
 static app_status_snapshot_t snapshot;
@@ -59,6 +61,7 @@ void app_state_note_event(app_input_source_t source)
     snapshot.events_forwarded++;
     snapshot.last_source = source;
     snapshot.last_event_timestamp_us = esp_timer_get_time();
+    input_activity_led_pulse();
     refresh_feature_activity(snapshot.last_event_timestamp_us);
 }
 

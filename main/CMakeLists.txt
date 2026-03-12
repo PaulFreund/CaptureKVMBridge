@@ -1,16 +1,23 @@
 set(app_priv_requires
     esp_driver_gpio
-    esp_lcd_touch
-    esp_lcd_touch_gt911
-    esp_lvgl_port
-    esp32_p4_wifi6_touch_lcd_4b
+    esp_driver_usb_serial_jtag
     esp_tinyusb
     esp_wifi
     esp_netif
     esp_event
+    esp_timer
     nvs_flash
     driver
 )
+
+if(CONFIG_IDF_TARGET STREQUAL "esp32p4")
+    list(APPEND app_priv_requires
+        esp_lcd_touch
+        esp_lcd_touch_gt911
+        esp_lvgl_port
+        esp32_p4_wifi6_touch_lcd_4b
+    )
+endif()
 
 if(CONFIG_APP_ENABLE_USB_AUDIO)
     list(APPEND app_priv_requires usb_device_uac)
@@ -23,6 +30,7 @@ idf_component_register(
     SRCS
         "hid_forwarder_main.c"
         "app_state.c"
+        "input_activity_led.c"
         "usb_hs_device.c"
         "protocol_tlv.c"
         "display_ui.c"

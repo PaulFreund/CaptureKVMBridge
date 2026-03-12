@@ -1,5 +1,7 @@
 #include "display_ui.h"
 
+#if CONFIG_IDF_TARGET_ESP32P4
+
 #include "esp_check.h"
 #include "esp_lvgl_port.h"
 #include "esp_log.h"
@@ -360,3 +362,17 @@ void display_ui_update(const app_status_snapshot_t *snapshot)
 
     bsp_display_unlock();
 }
+
+#else
+
+esp_err_t display_ui_init(void)
+{
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+void display_ui_update(const app_status_snapshot_t *snapshot)
+{
+    (void)snapshot;
+}
+
+#endif

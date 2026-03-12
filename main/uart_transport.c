@@ -84,6 +84,11 @@ esp_err_t uart_transport_start(serial_tlv_callback_t cb)
         return ESP_ERR_INVALID_ARG;
     }
 
+    if (UART_TLV_RX_GPIO < 0) {
+        ESP_LOGW(TAG, "UART TLV bridge disabled (RX GPIO not configured)");
+        return ESP_OK;
+    }
+
     tlv_stream_init(&s_stream, cb, APP_INPUT_SOURCE_UART);
 
     if (uart_is_driver_installed(UART_TLV_PORT)) {
@@ -123,6 +128,13 @@ esp_err_t uart_transport_start(serial_tlv_callback_t cb)
     BaseType_t res = xTaskCreatePinnedToCore(uart_rx_task, "uart_tlv_rx", UART_TASK_STACK, NULL,
                                              UART_TASK_PRIO, &s_task_handle, tskNO_AFFINITY);
     ESP_RETURN_ON_FALSE(res == pdPASS, ESP_FAIL, TAG, "create task failed");
+
+#if CONFIG_ESP_CONSOLE_UART
+    if (UART_TLV_PORT == (uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM) {
+        ESP_LOGW(TAG, "UART TLV bridge shares console UART%d; switch APP_UART_PORT_NUM or console settings if needed",
+                 (int)UART_TLV_PORT);
+    }
+#endif
 
     ESP_LOGI(TAG, "UART TLV bridge active on port %d (RX GPIO %d TX %d) %d,%d,%d,%d,%d",
              (int)UART_TLV_PORT,

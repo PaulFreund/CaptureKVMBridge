@@ -1,13 +1,14 @@
 #include "app_state.h"
 #include "display_ui.h"
+#include "input_activity_led.h"
 #include "protocol_tlv.h"
+#include "sdkconfig.h"
 #include "usb_hs_device.h"
 #include "network_transport.h"
 #include "serial_transport.h"
 #include "uart_transport.h"
 
 #include "esp_log.h"
-#include "bsp/esp-bsp.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -72,19 +73,23 @@ void app_main(void)
         nvs_ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(nvs_ret);
-    ESP_ERROR_CHECK(bsp_spiffs_mount());
     app_state_init();
+    ESP_ERROR_CHECK(input_activity_led_init());
     esp_err_t display_err = display_ui_init();
     bool display_enabled = (display_err == ESP_OK);
     if (display_err == ESP_ERR_NO_MEM) {
         ESP_LOGW(TAG, "Display UI disabled (not enough memory)");
+    } else if (display_err == ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGW(TAG, "Display UI disabled on target %s", CONFIG_IDF_TARGET);
     } else {
         ESP_ERROR_CHECK(display_err);
     }
     ESP_ERROR_CHECK(usb_hs_device_init());
     ESP_ERROR_CHECK(protocol_tlv_init(handle_protocol_event));
     ESP_ERROR_CHECK(network_transport_start(protocol_tlv_receive_frame));
+#if CONFIG_APP_ENABLE_USB_SERIAL_JTAG_TLV
     ESP_ERROR_CHECK(serial_transport_start(protocol_tlv_receive_frame));
+#endif
     ESP_ERROR_CHECK(uart_transport_start(protocol_tlv_receive_frame));
 
     xTaskCreatePinnedToCore(core_service_task, "core_service", 4096, NULL, 5, NULL, 1);

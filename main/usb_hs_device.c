@@ -6,6 +6,7 @@
 #include "esp_mac.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/ringbuf.h"
 #include "sdkconfig.h"
 #include "tinyusb.h"
@@ -33,6 +34,10 @@ void tud_resume_cb(void)
 #include <math.h>
 
 static const char *TAG = "usb_hs";
+
+#if CFG_TUD_HID
+#define HID_EVENT_QUEUE_LEN 64
+#endif
 
 #if CONFIG_APP_ENABLE_USB_AUDIO
 #define MIC_SAMPLES_PER_MS       ((CONFIG_UAC_SAMPLE_RATE + 999) / 1000)
@@ -275,12 +280,23 @@ static bool s_usb_ready = false;
 static bool s_usb_suspended = false;
 static bool s_remote_wakeup_enabled = false;
 static int64_t s_last_remote_wakeup_us = 0;
-static bool s_pending_keyboard_report = false;
-static usb_keyboard_report_t s_pending_keyboard;
-static bool s_pending_mouse_report = false;
-static usb_mouse_report_t s_pending_mouse;
-static bool s_pending_mouse_abs_report = false;
-static usb_mouse_absolute_report_t s_pending_mouse_abs;
+typedef enum {
+    HID_EVENT_KIND_KEYBOARD = 1,
+    HID_EVENT_KIND_MOUSE,
+    HID_EVENT_KIND_MOUSE_ABSOLUTE,
+} hid_event_kind_t;
+
+typedef struct {
+    hid_event_kind_t kind;
+    union {
+        usb_keyboard_report_t keyboard;
+        usb_mouse_report_t mouse;
+        usb_mouse_absolute_report_t mouse_abs;
+    } report;
+} hid_event_t;
+
+static QueueHandle_t s_hid_event_queue = NULL;
+static uint32_t s_hid_queue_drop_count = 0;
 #endif
 #if CFG_TUD_AUDIO
 static RingbufHandle_t s_mic_ring = NULL;
@@ -313,6 +329,15 @@ static void fill_serial_string(void)
     esp_efuse_mac_get_default(mac);
     snprintf(serial_string, sizeof(serial_string), "%02X%02X%02X%02X%02X%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+static tinyusb_port_t get_usb_device_port(void)
+{
+#if (SOC_USB_OTG_PERIPH_NUM > 1)
+    return TINYUSB_PORT_HIGH_SPEED_0;
+#else
+    return TINYUSB_PORT_FULL_SPEED_0;
+#endif
 }
 
 static void tinyusb_event_handler(tinyusb_event_t *event, void *arg)
@@ -366,6 +391,11 @@ static void update_hid_activity(bool keyboard, bool mouse)
     app_state_mark_feature_usage(keyboard, mouse, false);
 }
 
+static bool hid_queue_has_pending_reports(void)
+{
+    return s_hid_event_queue && uxQueueMessagesWaiting(s_hid_event_queue) > 0;
+}
+
 static void request_remote_wakeup_if_needed(void)
 {
     if (!s_usb_suspended || !s_remote_wakeup_enabled) {
@@ -383,6 +413,23 @@ static void request_remote_wakeup_if_needed(void)
         ESP_LOGI(TAG, "Remote wakeup signalled");
     } else {
         ESP_LOGW(TAG, "Remote wakeup request failed");
+    }
+}
+
+static void enqueue_hid_event(const hid_event_t *event)
+{
+    if (!event || !s_hid_event_queue) {
+        return;
+    }
+
+    if (xQueueSend(s_hid_event_queue, event, 0) == pdTRUE) {
+        return;
+    }
+
+    s_hid_queue_drop_count++;
+    if (s_hid_queue_drop_count == 1U || (s_hid_queue_drop_count % 16U) == 0U) {
+        ESP_LOGW(TAG, "HID event queue full, dropping event kind=%d (drops=%u)",
+                 (int)event->kind, (unsigned)s_hid_queue_drop_count);
     }
 }
 
@@ -459,6 +506,13 @@ esp_err_t usb_hs_device_init(void)
 {
     fill_serial_string();
 
+#if CFG_TUD_HID
+    if (!s_hid_event_queue) {
+        s_hid_event_queue = xQueueCreate(HID_EVENT_QUEUE_LEN, sizeof(hid_event_t));
+        ESP_RETURN_ON_FALSE(s_hid_event_queue != NULL, ESP_ERR_NO_MEM, TAG, "hid event queue alloc failed");
+    }
+#endif
+
 #if CFG_TUD_AUDIO
     if (!s_mic_ring) {
         s_mic_ring = xRingbufferCreate(MIC_RING_BUFFER_BYTES, RINGBUF_TYPE_BYTEBUF);
@@ -469,15 +523,15 @@ esp_err_t usb_hs_device_init(void)
 
     tinyusb_desc_config_t desc = {
         .device = &device_descriptor,
-        .qualifier = &device_qualifier,
+        .qualifier = TUD_OPT_HIGH_SPEED ? &device_qualifier : NULL,
         .string = string_desc_table,
         .string_count = STRID_COUNT,
         .full_speed_config = configuration_descriptor_fs,
-        .high_speed_config = configuration_descriptor_hs,
+        .high_speed_config = TUD_OPT_HIGH_SPEED ? configuration_descriptor_hs : NULL,
     };
 
     tinyusb_config_t tusb_cfg = {
-        .port = TINYUSB_PORT_HIGH_SPEED_0,
+        .port = get_usb_device_port(),
         .phy = {
             .skip_setup = false,
             .self_powered = false,
@@ -522,12 +576,11 @@ void usb_hs_handle_keyboard(const usb_keyboard_report_t *report)
         return;
     }
 
-    request_remote_wakeup_if_needed();
-
-    if (!send_keyboard_report_now(report)) {
-        s_pending_keyboard = *report;
-        s_pending_keyboard_report = true;
-    }
+    hid_event_t event = {
+        .kind = HID_EVENT_KIND_KEYBOARD,
+        .report.keyboard = *report,
+    };
+    enqueue_hid_event(&event);
 }
 
 void usb_hs_handle_mouse(const usb_mouse_report_t *report)
@@ -536,12 +589,11 @@ void usb_hs_handle_mouse(const usb_mouse_report_t *report)
         return;
     }
 
-    request_remote_wakeup_if_needed();
-
-    if (!send_mouse_report_now(report)) {
-        s_pending_mouse = *report;
-        s_pending_mouse_report = true;
-    }
+    hid_event_t event = {
+        .kind = HID_EVENT_KIND_MOUSE,
+        .report.mouse = *report,
+    };
+    enqueue_hid_event(&event);
 }
 
 void usb_hs_handle_mouse_absolute(const usb_mouse_absolute_report_t *report)
@@ -550,12 +602,11 @@ void usb_hs_handle_mouse_absolute(const usb_mouse_absolute_report_t *report)
         return;
     }
 
-    request_remote_wakeup_if_needed();
-
-    if (!send_mouse_abs_report_now(report)) {
-        s_pending_mouse_abs = *report;
-        s_pending_mouse_abs_report = true;
-    }
+    hid_event_t event = {
+        .kind = HID_EVENT_KIND_MOUSE_ABSOLUTE,
+        .report.mouse_abs = *report,
+    };
+    enqueue_hid_event(&event);
 }
 #else
 void usb_hs_handle_keyboard(const usb_keyboard_report_t *report)
@@ -619,26 +670,33 @@ void usb_hs_poll(void)
         return;
     }
 
-    bool progress = true;
-    while (progress && tud_hid_ready()) {
-        progress = false;
+    if (hid_queue_has_pending_reports()) {
+        request_remote_wakeup_if_needed();
+    }
 
-        if (s_pending_keyboard_report && send_keyboard_report_now(&s_pending_keyboard)) {
-            s_pending_keyboard_report = false;
-            progress = true;
-            continue;
+    hid_event_t event;
+    while (tud_hid_ready() && s_hid_event_queue && xQueueReceive(s_hid_event_queue, &event, 0) == pdTRUE) {
+        bool ok = false;
+
+        switch (event.kind) {
+        case HID_EVENT_KIND_KEYBOARD:
+            ok = send_keyboard_report_now(&event.report.keyboard);
+            break;
+        case HID_EVENT_KIND_MOUSE:
+            ok = send_mouse_report_now(&event.report.mouse);
+            break;
+        case HID_EVENT_KIND_MOUSE_ABSOLUTE:
+            ok = send_mouse_abs_report_now(&event.report.mouse_abs);
+            break;
+        default:
+            break;
         }
 
-        if (s_pending_mouse_report && send_mouse_report_now(&s_pending_mouse)) {
-            s_pending_mouse_report = false;
-            progress = true;
-            continue;
-        }
-
-        if (s_pending_mouse_abs_report && send_mouse_abs_report_now(&s_pending_mouse_abs)) {
-            s_pending_mouse_abs_report = false;
-            progress = true;
-            continue;
+        if (!ok) {
+            if (xQueueSendToFront(s_hid_event_queue, &event, 0) != pdTRUE) {
+                ESP_LOGW(TAG, "failed to requeue HID event kind=%d", (int)event.kind);
+            }
+            break;
         }
     }
 #else
