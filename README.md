@@ -16,7 +16,7 @@ only when targeting `esp32p4`.
   microphone so the target PC sees standard input peripherals.
 - Wi-Fi TLV ingress: optional SoftAP + UDP listener for CaptureKVM command frames.
 - USB-UART TLV ingress: uses the second USB serial port on common two-port ESP32-S3 boards, mapped
-  to UART0 RX on GPIO44 by default and clocked at 3 Mbps.
+  to UART0 RX on GPIO44 by default and clocked at 115200 baud.
 - Remote wake support: when the host PC suspends with wake enabled, incoming keyboard or mouse
   activity triggers a USB remote wakeup so the target machine powers back on seamlessly.
 - Optional P4-only display UI: the Waveshare LCD dashboard remains available for legacy `esp32p4`

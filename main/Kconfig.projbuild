@@ -102,10 +102,28 @@ config APP_TLV_ACTIVITY_LED_PULSE_MS
     help
         Duration of the LED pulse after each valid TLV frame.
 
+config APP_BOARD_RGB_LED_GPIO
+    int "Board RGB LED GPIO (-1 to disable)"
+    range -1 48
+    default 48 if IDF_TARGET_ESP32S3
+    default -1
+    help
+        GPIO used to drive the on-board addressable RGB LED.
+        HW678/YD-ESP32-S3 style boards use a WS2812 on GPIO48.
+        Set to -1 to disable the board RGB LED output.
+
+config APP_BOARD_RGB_LED_PULSE_MS
+    int "Board RGB LED pulse time (ms)"
+    range 10 5000
+    default 120
+    depends on APP_BOARD_RGB_LED_GPIO >= 0
+    help
+        Duration of the board RGB LED pulse used for input activity debugging.
+
 config APP_UART_BAUDRATE
     int "UART TLV baud rate"
     range 9600 6000000
-    default 3000000
+    default 115200
     help
         Baud rate used on the external UART bridge that carries TLV frames.
 

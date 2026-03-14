@@ -1,4 +1,5 @@
 #include "app_state.h"
+#include "board_rgb_led.h"
 #include "display_ui.h"
 #include "input_activity_led.h"
 #include "protocol_tlv.h"
@@ -16,6 +17,21 @@
 
 static const char *TAG = "forwarder";
 
+static void pulse_input_debug_led(protocol_event_type_t type)
+{
+    switch (type) {
+    case PROTOCOL_EVENT_KEYBOARD:
+        (void)board_rgb_led_pulse_color(0, 0, 96);
+        break;
+    case PROTOCOL_EVENT_MOUSE:
+    case PROTOCOL_EVENT_MOUSE_ABSOLUTE:
+        (void)board_rgb_led_pulse_color(0, 96, 0);
+        break;
+    default:
+        break;
+    }
+}
+
 static void handle_protocol_event(const protocol_event_t *event)
 {
     if (!event) {
@@ -25,14 +41,17 @@ static void handle_protocol_event(const protocol_event_t *event)
     case PROTOCOL_EVENT_KEYBOARD:
         usb_hs_handle_keyboard(&event->payload.keyboard);
         app_state_mark_feature_usage(true, false, false);
+        pulse_input_debug_led(event->type);
         break;
     case PROTOCOL_EVENT_MOUSE:
         usb_hs_handle_mouse(&event->payload.mouse);
         app_state_mark_feature_usage(false, true, false);
+        pulse_input_debug_led(event->type);
         break;
     case PROTOCOL_EVENT_MOUSE_ABSOLUTE:
         usb_hs_handle_mouse_absolute(&event->payload.mouse_abs);
         app_state_mark_feature_usage(false, true, false);
+        pulse_input_debug_led(event->type);
         break;
     case PROTOCOL_EVENT_MICROPHONE:
         usb_hs_handle_microphone_frame(&event->payload.microphone);
@@ -74,6 +93,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(nvs_ret);
     app_state_init();
+    ESP_ERROR_CHECK(board_rgb_led_init());
     ESP_ERROR_CHECK(input_activity_led_init());
     esp_err_t display_err = display_ui_init();
     bool display_enabled = (display_err == ESP_OK);

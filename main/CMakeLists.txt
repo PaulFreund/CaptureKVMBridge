@@ -6,6 +6,7 @@ set(app_priv_requires
     esp_netif
     esp_event
     esp_timer
+    led_strip
     nvs_flash
     driver
 )
@@ -30,6 +31,7 @@ idf_component_register(
     SRCS
         "hid_forwarder_main.c"
         "app_state.c"
+        "board_rgb_led.c"
         "input_activity_led.c"
         "usb_hs_device.c"
         "protocol_tlv.c"
