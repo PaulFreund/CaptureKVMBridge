@@ -123,7 +123,7 @@ config APP_BOARD_RGB_LED_PULSE_MS
 config APP_UART_BAUDRATE
     int "UART TLV baud rate"
     range 9600 6000000
-    default 115200
+    default 3000000
     help
         Baud rate used on the external UART bridge that carries TLV frames.
 
