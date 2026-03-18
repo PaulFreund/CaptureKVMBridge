@@ -110,8 +110,9 @@ static const char *TAG = "usb_hs";
 #endif
 
 #if CFG_TUD_HID
-#define ITF_NUM_HID                  _ITF_AFTER_AUDIO
-#define _ITF_AFTER_HID               (ITF_NUM_HID + 1)
+#define ITF_NUM_HID_KBD              _ITF_AFTER_AUDIO
+#define ITF_NUM_HID_MOUSE            (ITF_NUM_HID_KBD + 1)
+#define _ITF_AFTER_HID               (ITF_NUM_HID_MOUSE + 1)
 #else
 #define _ITF_AFTER_HID               _ITF_AFTER_AUDIO
 #endif
@@ -120,9 +121,11 @@ static const char *TAG = "usb_hs";
 
 #if CFG_TUD_AUDIO
 #define EP_AUDIO_MIC_IN   0x81
-#define EP_HID_IN         0x82
+#define EP_HID_KBD_IN     0x82
+#define EP_HID_MOUSE_IN   0x83
 #else
-#define EP_HID_IN 0x81
+#define EP_HID_KBD_IN     0x81
+#define EP_HID_MOUSE_IN   0x82
 #endif
 
 // -----------------------------------------------------------------------------
@@ -158,16 +161,21 @@ static const tusb_desc_device_qualifier_t device_qualifier = {
     .bReserved = 0
 };
 
-// HID report descriptor (keyboard + mouse, distinct report IDs)
+// HID report descriptors — keyboard and mouse on separate interfaces.
+// The keyboard interface uses no Report ID so its 8-byte report is identical
+// in both Report Protocol and Boot Protocol modes, allowing it to work on
+// secure/locked screens (e.g. SINA) that issue SET_PROTOCOL(Boot).
 #if CFG_TUD_HID
-#define HID_REPORT_ID_KEYBOARD     1
-#define HID_REPORT_ID_MOUSE_REL     2
-#define HID_REPORT_ID_MOUSE_ABS     3
+static const uint8_t hid_kbd_report_descriptor[] = {
+    TUD_HID_REPORT_DESC_KEYBOARD()
+};
 
-static const uint8_t hid_report_descriptor[] = {
-    TUD_HID_REPORT_DESC_KEYBOARD( HID_REPORT_ID(HID_REPORT_ID_KEYBOARD) ),
-    TUD_HID_REPORT_DESC_MOUSE   ( HID_REPORT_ID(HID_REPORT_ID_MOUSE_REL) ),
-    TUD_HID_REPORT_DESC_ABSMOUSE_16BIT( HID_REPORT_ID(HID_REPORT_ID_MOUSE_ABS) )
+#define HID_REPORT_ID_MOUSE_REL     1
+#define HID_REPORT_ID_MOUSE_ABS     2
+
+static const uint8_t hid_mouse_report_descriptor[] = {
+    TUD_HID_REPORT_DESC_MOUSE          ( HID_REPORT_ID(HID_REPORT_ID_MOUSE_REL) ),
+    TUD_HID_REPORT_DESC_ABSMOUSE_16BIT ( HID_REPORT_ID(HID_REPORT_ID_MOUSE_ABS) )
 };
 #endif
 
@@ -181,24 +189,27 @@ enum {
     STRID_AUDIO_MIC,
 #endif
 #if CFG_TUD_HID
-    STRID_HID,
+    STRID_HID_KBD,
+    STRID_HID_MOUSE,
 #endif
     STRID_COUNT
 };
 
 #if CFG_TUD_AUDIO && CFG_TUD_HID
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_AUDIO_DEVICE_DESC_LEN + TUD_HID_DESC_LEN)
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_AUDIO_DEVICE_DESC_LEN + 2 * TUD_HID_DESC_LEN)
 
 static const uint8_t configuration_descriptor_fs[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 250),
     TUD_AUDIO_DESCRIPTOR(ITF_NUM_AUDIO_CONTROL, STRID_AUDIO_CTRL, 0, EP_AUDIO_MIC_IN, 0),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID, STRID_HID, false, sizeof(hid_report_descriptor), EP_HID_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_KBD,   STRID_HID_KBD,   true,  sizeof(hid_kbd_report_descriptor),   EP_HID_KBD_IN,   CFG_TUD_HID_EP_BUFSIZE, 1),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, false, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
 };
 
 static const uint8_t configuration_descriptor_hs[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 250),
     TUD_AUDIO_DESCRIPTOR(ITF_NUM_AUDIO_CONTROL, STRID_AUDIO_CTRL, 0, EP_AUDIO_MIC_IN, 0),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID, STRID_HID, false, sizeof(hid_report_descriptor), EP_HID_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_KBD,   STRID_HID_KBD,   true,  sizeof(hid_kbd_report_descriptor),   EP_HID_KBD_IN,   CFG_TUD_HID_EP_BUFSIZE, 1),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, false, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
 };
 
 _Static_assert(sizeof(configuration_descriptor_fs) == CONFIG_TOTAL_LEN, "FS descriptor length mismatch");
@@ -221,16 +232,18 @@ _Static_assert(sizeof(configuration_descriptor_fs) == CONFIG_TOTAL_LEN, "FS desc
 _Static_assert(sizeof(configuration_descriptor_hs) == CONFIG_TOTAL_LEN, "HS descriptor length mismatch");
 
 #elif CFG_TUD_HID
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN)
 
 static const uint8_t configuration_descriptor_fs[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 250),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID, STRID_HID, false, sizeof(hid_report_descriptor), EP_HID_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_KBD,   STRID_HID_KBD,   true,  sizeof(hid_kbd_report_descriptor),   EP_HID_KBD_IN,   CFG_TUD_HID_EP_BUFSIZE, 1),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, false, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
 };
 
 static const uint8_t configuration_descriptor_hs[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 250),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID, STRID_HID, false, sizeof(hid_report_descriptor), EP_HID_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_KBD,   STRID_HID_KBD,   true,  sizeof(hid_kbd_report_descriptor),   EP_HID_KBD_IN,   CFG_TUD_HID_EP_BUFSIZE, 1),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, false, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
 };
 
 _Static_assert(sizeof(configuration_descriptor_fs) == CONFIG_TOTAL_LEN, "FS descriptor length mismatch");
@@ -266,7 +279,8 @@ static const char *string_desc_table[STRID_COUNT] = {
     "Microphone Stream",
 #endif
 #if CFG_TUD_HID
-    "Keyboard/Mouse",
+    "Keyboard",
+    "Mouse",
 #endif
 };
 
@@ -416,6 +430,9 @@ static void request_remote_wakeup_if_needed(void)
     }
 }
 
+#define HID_INSTANCE_KBD   0
+#define HID_INSTANCE_MOUSE 1
+
 static void enqueue_hid_event(const hid_event_t *event)
 {
     if (!event || !s_hid_event_queue) {
@@ -435,11 +452,12 @@ static void enqueue_hid_event(const hid_event_t *event)
 
 static bool send_keyboard_report_now(const usb_keyboard_report_t *report)
 {
-    if (!tud_hid_ready()) {
+    if (!tud_hid_n_ready(HID_INSTANCE_KBD)) {
         return false;
     }
 
-    bool ok = tud_hid_report(HID_REPORT_ID_KEYBOARD, report, sizeof(*report));
+    // report_id=0: no ID prefix → plain 8-byte boot-protocol-compatible report
+    bool ok = tud_hid_n_report(HID_INSTANCE_KBD, 0, report, sizeof(*report));
     if (ok) {
         update_hid_activity(true, false);
     }
@@ -448,7 +466,7 @@ static bool send_keyboard_report_now(const usb_keyboard_report_t *report)
 
 static bool send_mouse_report_now(const usb_mouse_report_t *report)
 {
-    if (!tud_hid_ready()) {
+    if (!tud_hid_n_ready(HID_INSTANCE_MOUSE)) {
         return false;
     }
 
@@ -460,7 +478,7 @@ static bool send_mouse_report_now(const usb_mouse_report_t *report)
         .pan = report->pan,
     };
 
-    bool ok = tud_hid_report(HID_REPORT_ID_MOUSE_REL, &hid_report, sizeof(hid_report));
+    bool ok = tud_hid_n_report(HID_INSTANCE_MOUSE, HID_REPORT_ID_MOUSE_REL, &hid_report, sizeof(hid_report));
     if (ok) {
         update_hid_activity(false, true);
     }
@@ -469,7 +487,7 @@ static bool send_mouse_report_now(const usb_mouse_report_t *report)
 
 static bool send_mouse_abs_report_now(const usb_mouse_absolute_report_t *report)
 {
-    if (!tud_hid_ready()) {
+    if (!tud_hid_n_ready(HID_INSTANCE_MOUSE)) {
         return false;
     }
 
@@ -484,7 +502,7 @@ static bool send_mouse_abs_report_now(const usb_mouse_absolute_report_t *report)
         .pan = report->pan,
     };
 
-    bool ok = tud_hid_report(HID_REPORT_ID_MOUSE_ABS, &hid_report, sizeof(hid_report));
+    bool ok = tud_hid_n_report(HID_INSTANCE_MOUSE, HID_REPORT_ID_MOUSE_ABS, &hid_report, sizeof(hid_report));
     if (ok) {
         update_hid_activity(false, true);
     }
@@ -675,7 +693,7 @@ void usb_hs_poll(void)
     }
 
     hid_event_t event;
-    while (tud_hid_ready() && s_hid_event_queue && xQueueReceive(s_hid_event_queue, &event, 0) == pdTRUE) {
+    while (s_hid_event_queue && xQueueReceive(s_hid_event_queue, &event, 0) == pdTRUE) {
         bool ok = false;
 
         switch (event.kind) {
@@ -733,8 +751,8 @@ void usb_hs_on_resume(void)
 #if CFG_TUD_HID
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance)
 {
-    (void)instance;
-    return hid_report_descriptor;
+    if (instance == HID_INSTANCE_KBD) return hid_kbd_report_descriptor;
+    return hid_mouse_report_descriptor;
 }
 
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type,
