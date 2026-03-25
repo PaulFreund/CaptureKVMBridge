@@ -197,14 +197,14 @@ static const uint8_t configuration_descriptor_fs[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 250),
     TUD_AUDIO_DESCRIPTOR(ITF_NUM_AUDIO_CONTROL, STRID_AUDIO_CTRL, 0, EP_AUDIO_MIC_IN, 0),
     TUD_HID_DESCRIPTOR(ITF_NUM_HID_KBD,   STRID_HID_KBD,   true,  sizeof(hid_kbd_report_descriptor),   EP_HID_KBD_IN,   CFG_TUD_HID_EP_BUFSIZE, 1),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, false, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, false, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 1),
 };
 
 static const uint8_t configuration_descriptor_hs[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 250),
     TUD_AUDIO_DESCRIPTOR(ITF_NUM_AUDIO_CONTROL, STRID_AUDIO_CTRL, 0, EP_AUDIO_MIC_IN, 0),
     TUD_HID_DESCRIPTOR(ITF_NUM_HID_KBD,   STRID_HID_KBD,   true,  sizeof(hid_kbd_report_descriptor),   EP_HID_KBD_IN,   CFG_TUD_HID_EP_BUFSIZE, 1),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, false, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, false, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 1),
 };
 
 _Static_assert(sizeof(configuration_descriptor_fs) == CONFIG_TOTAL_LEN, "FS descriptor length mismatch");
@@ -232,13 +232,13 @@ _Static_assert(sizeof(configuration_descriptor_hs) == CONFIG_TOTAL_LEN, "HS desc
 static const uint8_t configuration_descriptor_fs[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 250),
     TUD_HID_DESCRIPTOR(ITF_NUM_HID_KBD,   STRID_HID_KBD,   true,  sizeof(hid_kbd_report_descriptor),   EP_HID_KBD_IN,   CFG_TUD_HID_EP_BUFSIZE, 1),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, false, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, false, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 1),
 };
 
 static const uint8_t configuration_descriptor_hs[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 250),
     TUD_HID_DESCRIPTOR(ITF_NUM_HID_KBD,   STRID_HID_KBD,   true,  sizeof(hid_kbd_report_descriptor),   EP_HID_KBD_IN,   CFG_TUD_HID_EP_BUFSIZE, 1),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, false, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, false, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 1),
 };
 
 _Static_assert(sizeof(configuration_descriptor_fs) == CONFIG_TOTAL_LEN, "FS descriptor length mismatch");
@@ -700,8 +700,14 @@ uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance)
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type,
                                uint8_t *buffer, uint16_t reqlen)
 {
-    (void)instance;
     (void)report_id;
+    // Return an idle keyboard report so GET_REPORT does not stall.
+    // A stall causes some secure hosts (e.g. SINA) to stop polling the endpoint.
+    if (instance == HID_INSTANCE_KBD && report_type == HID_REPORT_TYPE_INPUT) {
+        uint16_t len = (uint16_t) tu_min32(sizeof(hid_keyboard_report_t), reqlen);
+        memset(buffer, 0, len);
+        return len;
+    }
     (void)report_type;
     (void)buffer;
     (void)reqlen;
