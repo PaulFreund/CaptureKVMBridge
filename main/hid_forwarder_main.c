@@ -45,9 +45,12 @@ static void handle_protocol_event(const protocol_event_t *event)
 static void core_service_task(void *arg)
 {
     (void)arg;
+    usb_hs_set_poll_task(xTaskGetCurrentTaskHandle());
     while (1) {
         usb_hs_poll();
-        vTaskDelay(1);
+        // Block until signalled by a report-complete callback or a new pending
+        // report, with a 1ms fallback so we never stall indefinitely.
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
     }
 }
 
@@ -87,7 +90,7 @@ void app_main(void)
     ESP_ERROR_CHECK(serial_transport_start(protocol_tlv_receive_frame));
     ESP_ERROR_CHECK(uart_transport_start(protocol_tlv_receive_frame));
 
-    xTaskCreatePinnedToCore(core_service_task, "core_service", 4096, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(core_service_task, "core_service", 4096, NULL, 6, NULL, 0);
     if (display_enabled) {
         xTaskCreatePinnedToCore(display_task, "display", 4096, NULL, 1, NULL, tskNO_AFFINITY);
     }
