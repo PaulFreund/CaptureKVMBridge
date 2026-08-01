@@ -2,6 +2,8 @@
 
 #include "esp_err.h"
 #include "app_state.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -37,6 +39,7 @@ typedef struct {
 } usb_microphone_frame_t;
 
 esp_err_t usb_hs_device_init(void);
+void usb_hs_set_poll_task(TaskHandle_t handle);
 void usb_hs_handle_keyboard(const usb_keyboard_report_t *report);
 void usb_hs_handle_mouse(const usb_mouse_report_t *report);
 void usb_hs_handle_mouse_absolute(const usb_mouse_absolute_report_t *report);

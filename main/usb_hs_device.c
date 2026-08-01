@@ -6,7 +6,9 @@
 #include "esp_mac.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/ringbuf.h"
+#include "freertos/task.h"
 #include "sdkconfig.h"
 #include "tinyusb.h"
 #include "tusb.h"
@@ -105,8 +107,9 @@ static const char *TAG = "usb_hs";
 #endif
 
 #if CFG_TUD_HID
-#define ITF_NUM_HID                  _ITF_AFTER_AUDIO
-#define _ITF_AFTER_HID               (ITF_NUM_HID + 1)
+#define ITF_NUM_HID_KBD              _ITF_AFTER_AUDIO
+#define ITF_NUM_HID_MOUSE            (ITF_NUM_HID_KBD + 1)
+#define _ITF_AFTER_HID               (ITF_NUM_HID_MOUSE + 1)
 #else
 #define _ITF_AFTER_HID               _ITF_AFTER_AUDIO
 #endif
@@ -114,10 +117,12 @@ static const char *TAG = "usb_hs";
 #define ITF_NUM_TOTAL                _ITF_AFTER_HID
 
 #if CFG_TUD_AUDIO
-#define EP_AUDIO_MIC_IN   0x81
-#define EP_HID_IN         0x82
+#define EP_AUDIO_MIC_IN      0x81
+#define EP_HID_KBD_IN        0x82
+#define EP_HID_MOUSE_IN      0x83
 #else
-#define EP_HID_IN 0x81
+#define EP_HID_KBD_IN        0x81
+#define EP_HID_MOUSE_IN      0x82
 #endif
 
 // -----------------------------------------------------------------------------
@@ -128,12 +133,12 @@ static const tusb_desc_device_t device_descriptor = {
     .bLength = sizeof(tusb_desc_device_t),
     .bDescriptorType = TUSB_DESC_DEVICE,
     .bcdUSB = 0x0200,
-    .bDeviceClass = TUSB_CLASS_MISC,
+    .bDeviceClass = TUSB_CLASS_MISC,          // MISC/IAD needed for composite with audio
     .bDeviceSubClass = MISC_SUBCLASS_COMMON,
     .bDeviceProtocol = MISC_PROTOCOL_IAD,
     .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
-    .idVendor = 0x303A,
-    .idProduct = 0x5092,
+    .idVendor = 0x1D6B,   // Linux Foundation — SINA lockscreen whitelist
+    .idProduct = 0x0106,  // Linux Foundation USB Gadget (less common, avoids driver conflicts)
     .bcdDevice = 0x0101,
     .iManufacturer = 0x01,
     .iProduct = 0x02,
@@ -153,17 +158,22 @@ static const tusb_desc_device_qualifier_t device_qualifier = {
     .bReserved = 0
 };
 
-// HID report descriptor (keyboard + mouse, distinct report IDs)
+// HID report descriptors — keyboard and mouse on separate interfaces.
+// The keyboard interface uses no Report ID so its 8-byte report is identical
+// in both Report Protocol and Boot Protocol modes, allowing it to work on
+// secure/locked screens (e.g. SINA) that issue SET_PROTOCOL(Boot).
 #if CFG_TUD_HID
-#define HID_REPORT_ID_KEYBOARD     1
-#define HID_REPORT_ID_MOUSE_REL     2
-#define HID_REPORT_ID_MOUSE_ABS     3
-
-static const uint8_t hid_report_descriptor[] = {
-    TUD_HID_REPORT_DESC_KEYBOARD( HID_REPORT_ID(HID_REPORT_ID_KEYBOARD) ),
-    TUD_HID_REPORT_DESC_MOUSE   ( HID_REPORT_ID(HID_REPORT_ID_MOUSE_REL) ),
-    TUD_HID_REPORT_DESC_ABSMOUSE_16BIT( HID_REPORT_ID(HID_REPORT_ID_MOUSE_ABS) )
+static const uint8_t hid_kbd_report_descriptor[] = {
+    TUD_HID_REPORT_DESC_KEYBOARD()
 };
+
+// No Report IDs — plain 5-byte boot-compatible relative mouse.
+// SINA virtualises input for VID=0x1D6B and parses mouse in boot format;
+// a Report ID prefix byte would be misinterpreted as button data.
+static const uint8_t hid_mouse_report_descriptor[] = {
+    TUD_HID_REPORT_DESC_MOUSE()
+};
+
 #endif
 
 enum {
@@ -176,24 +186,27 @@ enum {
     STRID_AUDIO_MIC,
 #endif
 #if CFG_TUD_HID
-    STRID_HID,
+    STRID_HID_KBD,
+    STRID_HID_MOUSE,
 #endif
     STRID_COUNT
 };
 
 #if CFG_TUD_AUDIO && CFG_TUD_HID
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_AUDIO_DEVICE_DESC_LEN + TUD_HID_DESC_LEN)
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_AUDIO_DEVICE_DESC_LEN + 2 * TUD_HID_DESC_LEN)
 
 static const uint8_t configuration_descriptor_fs[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 250),
     TUD_AUDIO_DESCRIPTOR(ITF_NUM_AUDIO_CONTROL, STRID_AUDIO_CTRL, 0, EP_AUDIO_MIC_IN, 0),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID, STRID_HID, false, sizeof(hid_report_descriptor), EP_HID_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_KBD,   STRID_HID_KBD,   true, sizeof(hid_kbd_report_descriptor),   EP_HID_KBD_IN,   CFG_TUD_HID_EP_BUFSIZE, 1),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, true, sizeof(hid_mouse_report_descriptor),  EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 1),
 };
 
 static const uint8_t configuration_descriptor_hs[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 250),
     TUD_AUDIO_DESCRIPTOR(ITF_NUM_AUDIO_CONTROL, STRID_AUDIO_CTRL, 0, EP_AUDIO_MIC_IN, 0),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID, STRID_HID, false, sizeof(hid_report_descriptor), EP_HID_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_KBD,   STRID_HID_KBD,   true, sizeof(hid_kbd_report_descriptor),   EP_HID_KBD_IN,   CFG_TUD_HID_EP_BUFSIZE, 1),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, true, sizeof(hid_mouse_report_descriptor),  EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 1),
 };
 
 _Static_assert(sizeof(configuration_descriptor_fs) == CONFIG_TOTAL_LEN, "FS descriptor length mismatch");
@@ -216,16 +229,18 @@ _Static_assert(sizeof(configuration_descriptor_fs) == CONFIG_TOTAL_LEN, "FS desc
 _Static_assert(sizeof(configuration_descriptor_hs) == CONFIG_TOTAL_LEN, "HS descriptor length mismatch");
 
 #elif CFG_TUD_HID
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN)
 
 static const uint8_t configuration_descriptor_fs[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 250),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID, STRID_HID, false, sizeof(hid_report_descriptor), EP_HID_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_KBD,   STRID_HID_KBD,   true, sizeof(hid_kbd_report_descriptor),  EP_HID_KBD_IN,   CFG_TUD_HID_EP_BUFSIZE, 1),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, true, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 1),
 };
 
 static const uint8_t configuration_descriptor_hs[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 250),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID, STRID_HID, false, sizeof(hid_report_descriptor), EP_HID_IN, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_KBD,   STRID_HID_KBD,   true, sizeof(hid_kbd_report_descriptor),  EP_HID_KBD_IN,   CFG_TUD_HID_EP_BUFSIZE, 1),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_MOUSE, STRID_HID_MOUSE, true, sizeof(hid_mouse_report_descriptor), EP_HID_MOUSE_IN, CFG_TUD_HID_EP_BUFSIZE, 1),
 };
 
 _Static_assert(sizeof(configuration_descriptor_fs) == CONFIG_TOTAL_LEN, "FS descriptor length mismatch");
@@ -261,7 +276,8 @@ static const char *string_desc_table[STRID_COUNT] = {
     "Microphone Stream",
 #endif
 #if CFG_TUD_HID
-    "Keyboard/Mouse",
+    "Keyboard",
+    "Mouse",
 #endif
 };
 
@@ -271,16 +287,27 @@ static const char *string_desc_table[STRID_COUNT] = {
 // -----------------------------------------------------------------------------
 
 static bool s_usb_ready = false;
+static TaskHandle_t s_poll_task_handle = NULL;
+
 #if CFG_TUD_HID
+// Per-type report FIFOs. A single pending slot (the old design) collapsed any burst
+// that arrived faster than the USB endpoint drained down to its last frame — dropping
+// intermediate keystrokes and mouse deltas. Queues preserve the whole burst in order;
+// the poll task drains them as the endpoints free up.
+#define HID_KBD_QUEUE_LEN      128
+#define HID_MOUSE_QUEUE_LEN    128
+// Brief producer backpressure when a queue is momentarily full (USB behind). The UART
+// task outranks the poll task and the driver has a 32 KB RX buffer, so a short block is
+// safe and lets the consumer catch up; only a sustained stall drops (and is counted).
+#define HID_ENQUEUE_TIMEOUT_MS 8
+
 static bool s_usb_suspended = false;
 static bool s_remote_wakeup_enabled = false;
 static int64_t s_last_remote_wakeup_us = 0;
-static bool s_pending_keyboard_report = false;
-static usb_keyboard_report_t s_pending_keyboard;
-static bool s_pending_mouse_report = false;
-static usb_mouse_report_t s_pending_mouse;
-static bool s_pending_mouse_abs_report = false;
-static usb_mouse_absolute_report_t s_pending_mouse_abs;
+static QueueHandle_t s_kbd_queue = NULL;
+static QueueHandle_t s_mouse_queue = NULL;
+static uint32_t s_kbd_dropped = 0;
+static uint32_t s_mouse_dropped = 0;
 #endif
 #if CFG_TUD_AUDIO
 static RingbufHandle_t s_mic_ring = NULL;
@@ -386,13 +413,17 @@ static void request_remote_wakeup_if_needed(void)
     }
 }
 
+#define HID_INSTANCE_KBD   0
+#define HID_INSTANCE_MOUSE 1
+
 static bool send_keyboard_report_now(const usb_keyboard_report_t *report)
 {
-    if (!tud_hid_ready()) {
+    if (!tud_hid_n_ready(HID_INSTANCE_KBD)) {
         return false;
     }
 
-    bool ok = tud_hid_report(HID_REPORT_ID_KEYBOARD, report, sizeof(*report));
+    // report_id=0: no ID prefix → plain 8-byte boot-protocol-compatible report
+    bool ok = tud_hid_n_report(HID_INSTANCE_KBD, 0, report, sizeof(*report));
     if (ok) {
         update_hid_activity(true, false);
     }
@@ -401,7 +432,7 @@ static bool send_keyboard_report_now(const usb_keyboard_report_t *report)
 
 static bool send_mouse_report_now(const usb_mouse_report_t *report)
 {
-    if (!tud_hid_ready()) {
+    if (!tud_hid_n_ready(HID_INSTANCE_MOUSE)) {
         return false;
     }
 
@@ -413,7 +444,8 @@ static bool send_mouse_report_now(const usb_mouse_report_t *report)
         .pan = report->pan,
     };
 
-    bool ok = tud_hid_report(HID_REPORT_ID_MOUSE_REL, &hid_report, sizeof(hid_report));
+    // report_id=0: no prefix — matches boot-mouse format SINA expects
+    bool ok = tud_hid_n_report(HID_INSTANCE_MOUSE, 0, &hid_report, sizeof(hid_report));
     if (ok) {
         update_hid_activity(false, true);
     }
@@ -422,27 +454,12 @@ static bool send_mouse_report_now(const usb_mouse_report_t *report)
 
 static bool send_mouse_abs_report_now(const usb_mouse_absolute_report_t *report)
 {
-    if (!tud_hid_ready()) {
-        return false;
-    }
-
-    int16_t scaled_x = scale_abs_axis(report->x, (uint32_t)CONFIG_APP_ABS_MOUSE_MAX_X);
-    int16_t scaled_y = scale_abs_axis(report->y, (uint32_t)CONFIG_APP_ABS_MOUSE_MAX_Y);
-
-    hid_abs_mouse_report_t hid_report = {
-        .buttons = report->buttons & 0x1F,
-        .x = scaled_x,
-        .y = scaled_y,
-        .wheel = report->wheel,
-        .pan = report->pan,
-    };
-
-    bool ok = tud_hid_report(HID_REPORT_ID_MOUSE_ABS, &hid_report, sizeof(hid_report));
-    if (ok) {
-        update_hid_activity(false, true);
-    }
-    return ok;
+    // Absolute mouse not supported: SINA virtualises input and only processes
+    // relative boot-format reports. Silently discard to avoid queuing.
+    (void)report;
+    return true;
 }
+
 #else
 static inline void update_hid_activity(bool keyboard, bool mouse)
 {
@@ -455,9 +472,24 @@ static inline void update_hid_activity(bool keyboard, bool mouse)
 // Public API
 // -----------------------------------------------------------------------------
 
+void usb_hs_set_poll_task(TaskHandle_t handle)
+{
+    s_poll_task_handle = handle;
+}
+
 esp_err_t usb_hs_device_init(void)
 {
     fill_serial_string();
+
+#if CFG_TUD_HID
+    if (!s_kbd_queue) {
+        s_kbd_queue = xQueueCreate(HID_KBD_QUEUE_LEN, sizeof(usb_keyboard_report_t));
+    }
+    if (!s_mouse_queue) {
+        s_mouse_queue = xQueueCreate(HID_MOUSE_QUEUE_LEN, sizeof(usb_mouse_report_t));
+    }
+    ESP_RETURN_ON_FALSE(s_kbd_queue && s_mouse_queue, ESP_ERR_NO_MEM, TAG, "HID report queue alloc failed");
+#endif
 
 #if CFG_TUD_AUDIO
     if (!s_mic_ring) {
@@ -524,10 +556,15 @@ void usb_hs_handle_keyboard(const usb_keyboard_report_t *report)
 
     request_remote_wakeup_if_needed();
 
-    if (!send_keyboard_report_now(report)) {
-        s_pending_keyboard = *report;
-        s_pending_keyboard_report = true;
+    // Always enqueue (in order); the poll task sends as the endpoint frees. A brief block
+    // rides out a momentarily busy endpoint without stalling the UART; a sustained overflow
+    // drops the newest report and counts it — visible, never a silent burst collapse.
+    if (xQueueSend(s_kbd_queue, report, pdMS_TO_TICKS(HID_ENQUEUE_TIMEOUT_MS)) != pdTRUE) {
+        if ((++s_kbd_dropped & 0x3F) == 1) {
+            ESP_LOGW(TAG, "keyboard queue full, dropped %u report(s)", (unsigned)s_kbd_dropped);
+        }
     }
+    if (s_poll_task_handle) xTaskNotifyGive(s_poll_task_handle);
 }
 
 void usb_hs_handle_mouse(const usb_mouse_report_t *report)
@@ -538,10 +575,12 @@ void usb_hs_handle_mouse(const usb_mouse_report_t *report)
 
     request_remote_wakeup_if_needed();
 
-    if (!send_mouse_report_now(report)) {
-        s_pending_mouse = *report;
-        s_pending_mouse_report = true;
+    if (xQueueSend(s_mouse_queue, report, pdMS_TO_TICKS(HID_ENQUEUE_TIMEOUT_MS)) != pdTRUE) {
+        if ((++s_mouse_dropped & 0x3F) == 1) {
+            ESP_LOGW(TAG, "mouse queue full, dropped %u report(s)", (unsigned)s_mouse_dropped);
+        }
     }
+    if (s_poll_task_handle) xTaskNotifyGive(s_poll_task_handle);
 }
 
 void usb_hs_handle_mouse_absolute(const usb_mouse_absolute_report_t *report)
@@ -552,10 +591,9 @@ void usb_hs_handle_mouse_absolute(const usb_mouse_absolute_report_t *report)
 
     request_remote_wakeup_if_needed();
 
-    if (!send_mouse_abs_report_now(report)) {
-        s_pending_mouse_abs = *report;
-        s_pending_mouse_abs_report = true;
-    }
+    // Absolute mouse is intentionally discarded (SINA only accepts relative boot reports);
+    // send_mouse_abs_report_now is a no-op that never queues.
+    (void)send_mouse_abs_report_now(report);
 }
 #else
 void usb_hs_handle_keyboard(const usb_keyboard_report_t *report)
@@ -619,27 +657,23 @@ void usb_hs_poll(void)
         return;
     }
 
-    bool progress = true;
-    while (progress && tud_hid_ready()) {
-        progress = false;
-
-        if (s_pending_keyboard_report && send_keyboard_report_now(&s_pending_keyboard)) {
-            s_pending_keyboard_report = false;
-            progress = true;
-            continue;
+    // Drain each queue as far as its endpoint allows. Peek first and only remove the report
+    // once TinyUSB has accepted it, so a busy endpoint leaves the report queued (in order)
+    // for the next report-complete wake rather than dropping it.
+    usb_keyboard_report_t kb;
+    while (xQueuePeek(s_kbd_queue, &kb, 0) == pdTRUE) {
+        if (!send_keyboard_report_now(&kb)) {
+            break;  // endpoint busy; retry when tud_hid_report_complete_cb wakes us
         }
+        xQueueReceive(s_kbd_queue, &kb, 0);
+    }
 
-        if (s_pending_mouse_report && send_mouse_report_now(&s_pending_mouse)) {
-            s_pending_mouse_report = false;
-            progress = true;
-            continue;
+    usb_mouse_report_t ms;
+    while (xQueuePeek(s_mouse_queue, &ms, 0) == pdTRUE) {
+        if (!send_mouse_report_now(&ms)) {
+            break;
         }
-
-        if (s_pending_mouse_abs_report && send_mouse_abs_report_now(&s_pending_mouse_abs)) {
-            s_pending_mouse_abs_report = false;
-            progress = true;
-            continue;
-        }
+        xQueueReceive(s_mouse_queue, &ms, 0);
     }
 #else
     (void)s_usb_ready;
@@ -675,8 +709,8 @@ void usb_hs_on_resume(void)
 #if CFG_TUD_HID
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance)
 {
-    (void)instance;
-    return hid_report_descriptor;
+    if (instance == HID_INSTANCE_KBD) return hid_kbd_report_descriptor;
+    return hid_mouse_report_descriptor;
 }
 
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type,
@@ -685,9 +719,10 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
     (void)instance;
     (void)report_id;
     (void)report_type;
-    (void)buffer;
-    (void)reqlen;
-    return 0;
+    // Return a zeroed idle report for any GET_REPORT rather than stalling.
+    // A stall causes some secure hosts (e.g. SINA) to stop polling the endpoint.
+    memset(buffer, 0, reqlen);
+    return reqlen;
 }
 
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type,
@@ -698,6 +733,16 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
     (void)report_type;
     (void)buffer;
     (void)bufsize;
+}
+
+// Called by TinyUSB when a report has been delivered to the host.
+// Wake the poll task so it can immediately send any queued report.
+void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, uint16_t len)
+{
+    (void)instance;
+    (void)report;
+    (void)len;
+    if (s_poll_task_handle) xTaskNotifyGive(s_poll_task_handle);
 }
 #else
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance)
