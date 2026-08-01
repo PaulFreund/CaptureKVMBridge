@@ -45,9 +45,12 @@ static void handle_protocol_event(const protocol_event_t *event)
 static void core_service_task(void *arg)
 {
     (void)arg;
+    usb_hs_set_poll_task(xTaskGetCurrentTaskHandle());
     while (1) {
         usb_hs_poll();
-        vTaskDelay(pdMS_TO_TICKS(10));
+        // Block until signalled by a report-complete callback or a new pending
+        // report, with a 1ms fallback so we never stall indefinitely.
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
     }
 }
 
